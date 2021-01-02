@@ -11,7 +11,7 @@ import struct
 bl_info = {
     "name": "MagicaVoxel VOX Importer",
     "author": "TechnistGuru",
-    "version": (1, 0, 0),
+    "version": (1, 0, 1),
     "blender": (2, 80, 0),
     "location": "File > Import-Export",
     "description": "Import MagicaVoxel .vox files",
@@ -60,39 +60,37 @@ class ImportVox(Operator, ImportHelper):
 
 
 class Vec3:
-    x, y, z = 0.0, 0.0, 0.0
-    
     def __init__(self, X, Y, Z):
         self.x, self.y, self.z = X, Y, Z
+    
+    def _index(self):
+        return self.x + self.y*256 + self.z*256*256
 
 class VoxelObject:
-    position = Vec3(0, 0, 0)
-    size = Vec3(0, 0, 0)
-    voxels = []
-    
-    def __init__(self, Size, Voxels):
-        self.size = Size
-        self.voxels = []
-        for x in range(self.size.x):
-            self.voxels.append([])
-            for y in range(self.size.y):
-                self.voxels[x].append([])
-                for z in range(self.size.z):
-                    self.voxels[x][y].append(0)
+    def __init__(self, Voxels):
+        self.voxels = {}
+        self.used_colors = []
+        self.position = Vec3(0, 0, 0)
         
         for vox in Voxels:
-            #              x       y       z        id
-            self.voxels[vox[0]][vox[1]][vox[2]] = vox[3]
+            #              x       y       z
+            pos = Vec3(vox[0], vox[1], vox[2])
+            self.voxels[pos._index()] = (pos, vox[3])
+            
+            if vox[3] not in self.used_colors:
+                self.used_colors.append(vox[3])
     
     def getVox(self, pos):
-        if pos.x<0 or pos.x>=self.size.x or pos.y<0 or pos.y>=self.size.y or pos.z<0 or pos.z>=self.size.z:
-            return 0
-        return self.voxels[pos.x][pos.y][pos.z]
+        key = pos._index()
+        if key in self.voxels:
+            return self.voxels[key][1]
+        
+        return 0
     
     def generate(self, use_mat, file_name, vox_size):
         objects = []
         
-        for Col in range(1, 256): # Create an object for each color and then join them.
+        for Col in self.used_colors: # Create an object for each color and then join them.
             
             mesh = bpy.data.meshes.new(file_name) # Create mesh
             obj = bpy.data.objects.new(file_name, mesh) # Create object
@@ -103,11 +101,10 @@ class VoxelObject:
             verts = []
             faces = []
             
-            for x in range(self.size.x):
-                for y in range(self.size.y):
-                    for z in range(self.size.z):
+            for key in self.voxels:
+                        pos, colID = self.voxels[key]
+                        x, y, z = pos.x, pos.y, pos.z
                         
-                        colID = self.voxels[x][y][z]
                         if colID != Col:
                             continue
                         
@@ -213,17 +210,13 @@ def import_vox(path, voxel_size=1, gamma_correct=True, gamma_value=2.2, import_p
             *name, h_size, h_children = struct.unpack('<4cii', file.read(12))
             name = b"".join(name)
             
-            if name == b'SIZE':
-                x, y, z = struct.unpack('<3i', file.read(12))
-                size = Vec3(x, y, z)
-            
-            elif name == b'XYZI':
+            if name == b'XYZI':
                 voxels = []
                 num_voxels, = struct.unpack('<i', file.read(4))
                 for voxel in range(num_voxels):
                     voxel_data = struct.unpack('<4B', file.read(4))
                     voxels.append(voxel_data)
-                obj = VoxelObject(size, voxels)
+                obj = VoxelObject(voxels)
                 objects.append(obj)
             
             elif name == b'RGBA':
