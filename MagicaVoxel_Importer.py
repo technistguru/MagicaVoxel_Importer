@@ -196,7 +196,6 @@ def import_vox(path, voxel_size=1, gamma_correct=True, gamma_value=2.2, import_p
         file_name = os.path.basename(file.name).replace('.vox', '')
         file_size = os.path.getsize(path)
         
-        voxels = []
         palette = []
         materials = [[0, 0, 0, 0]]*255 # [roughness, metallic, glass, emission] * 255
         
@@ -219,6 +218,7 @@ def import_vox(path, voxel_size=1, gamma_correct=True, gamma_value=2.2, import_p
                 size = Vec3(x, y, z)
             
             elif name == b'XYZI':
+                voxels = []
                 num_voxels, = struct.unpack('<i', file.read(4))
                 for voxel in range(num_voxels):
                     voxel_data = struct.unpack('<4B', file.read(4))
