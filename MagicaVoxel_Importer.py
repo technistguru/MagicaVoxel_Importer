@@ -11,11 +11,11 @@ import struct
 bl_info = {
     "name": "MagicaVoxel VOX Importer",
     "author": "TechnistGuru",
-    "version": (1, 0, 1),
+    "version": (1, 0, 2),
     "blender": (2, 80, 0),
     "location": "File > Import-Export",
     "description": "Import MagicaVoxel .vox files",
-    "wiki_url": "",
+    "wiki_url": "https://github.com/technistguru/MagicaVoxel_Importer",
     "category": "Import-Export"}
 
 
@@ -58,6 +58,8 @@ class ImportVox(Operator, ImportHelper):
         
         return {"FINISHED"}
 
+################################################################################################################################################
+################################################################################################################################################
 
 class Vec3:
     def __init__(self, X, Y, Z):
@@ -67,7 +69,8 @@ class Vec3:
         return self.x + self.y*256 + self.z*256*256
 
 class VoxelObject:
-    def __init__(self, Voxels):
+    def __init__(self, Voxels, Size):
+        self.size = Size
         self.voxels = {}
         self.used_colors = []
         self.position = Vec3(0, 0, 0)
@@ -175,7 +178,6 @@ class VoxelObject:
                                             len(verts)-1] )
                                         
             mesh.from_pydata(verts, [], faces)
-            obj.scale = [vox_size, vox_size, vox_size]
             
             if use_mat:
                 obj.data.materials.append(bpy.data.materials.get(file_name + " #" + str(Col)))
@@ -183,9 +185,23 @@ class VoxelObject:
         bpy.ops.object.select_all(action='DESELECT')
         for obj in objects:
             obj.select_set(True) # Select all objects that were generated.
-        bpy.context.view_layer.objects.active = objects[0] # Make the first one active.
+        
+        obj = objects[0]
+        bpy.context.view_layer.objects.active = obj # Make the first one active.
         bpy.ops.object.join() # Join selected objects.
+        
+        # Sets the origin of object to be the same as in MagicaVoxel so that its location can be set correctly.
+        bpy.context.scene.cursor.location = [0, 0, 0]
+        obj.location = [int(-self.size.x/2), int(-self.size.y/2), int(-self.size.z/2)]
+        bpy.ops.object.origin_set(type='ORIGIN_CURSOR', center='MEDIAN')
+        
+        # Set scale and position.
+        obj.location = [self.position.x*vox_size, self.position.y*vox_size, self.position.z*vox_size]
+        obj.scale = [vox_size, vox_size, vox_size]
 
+
+################################################################################################################################################
+################################################################################################################################################
 
 def import_vox(path, voxel_size=1, gamma_correct=True, gamma_value=2.2, import_palette=True, import_materials=True, override_materials=True):
     
@@ -209,32 +225,70 @@ def import_vox(path, voxel_size=1, gamma_correct=True, gamma_value=2.2, import_p
         while file.tell() < file_size:
             *name, h_size, h_children = struct.unpack('<4cii', file.read(12))
             name = b"".join(name)
+            print(name)
             
-            if name == b'XYZI':
+            if name == b'SIZE': # Size of object.
+                x, y, z = struct.unpack('<3i', file.read(12))
+                size = Vec3(x, y, z)
+            
+            elif name == b'XYZI': # Location and color id of object.
                 voxels = []
                 num_voxels, = struct.unpack('<i', file.read(4))
                 for voxel in range(num_voxels):
                     voxel_data = struct.unpack('<4B', file.read(4))
                     voxels.append(voxel_data)
-                obj = VoxelObject(voxels)
+                obj = VoxelObject(voxels, size)
                 objects.append(obj)
+            
+            elif name == b'nTRN': # Position and rotation of object.
+                id, = struct.unpack('<i', file.read(4))
+                
+                # Don't need node attributes.
+                dict_size, = struct.unpack('<i', file.read(4))
+                for _ in range(dict_size):
+                    key_bytes, = struct.unpack('<i', file.read(4))
+                    key = struct.unpack('<'+str(key_bytes)+'c', file.read(key_bytes))
+                    value_bytes, = struct.unpack('<i', file.read(4))
+                    file.read(value_bytes)
+                
+                # Frames must always be 1.
+                child_id, _, _, frames, = struct.unpack('<4i', file.read(16))
+                # Converts location of object's XYZI chunk in file to location of object in objects list.
+                child_id = int((child_id-1)/2)-1
+                # child_id is actually the id of a shape chunk and not an xyzi chunk but as long as the order hasn't been changed this will work.
+                
+                dict_size, = struct.unpack('<i', file.read(4))
+                for _ in range(dict_size):
+                    key_bytes, = struct.unpack('<i', file.read(4))
+                    key = struct.unpack('<'+str(key_bytes)+'c', file.read(key_bytes))
+                    key = b"".join(key)
+                    
+                    value_bytes, = struct.unpack('<i', file.read(4))
+                    value = struct.unpack('<'+str(value_bytes)+'c', file.read(value_bytes))
+                    value = b"".join(value)
+                    value = value.decode('utf-8')
+                    
+                    if key == b'_t' and child_id < len(objects): # Translation
+                        value = value.split()
+                        objects[child_id].position = Vec3(int(value[0]), int(value[1]), int(value[2]))
+            
             
             elif name == b'RGBA':
                 for _ in range(255):
                     palette.append(struct.unpack('<4B', file.read(4)))
-                file.read(4)
+                file.read(4) # Contains a 256th color for some reason.
             
             elif name == b'MATL':
-                id = struct.unpack('<i', file.read(4))[0]
-                dict_size = struct.unpack('<i', file.read(4))[0] # Number of key:value pairs in material dictionary.
+                id, = struct.unpack('<i', file.read(4))
+                dict_size, = struct.unpack('<i', file.read(4)) # Number of key:value pairs in material dictionary.
                 
                 for _ in range(dict_size):
-                    key_size = struct.unpack('<i', file.read(4))[0]
-                    key = struct.unpack('<'+str(key_size)+'c', file.read(key_size))
+                    key_bytes, = struct.unpack('<i', file.read(4))
+                    key = struct.unpack('<'+str(key_bytes)+'c', file.read(key_bytes))
                     key = b"".join(key)
                     
-                    value_size = struct.unpack('<i', file.read(4))[0]
-                    value = struct.unpack('<'+str(value_size)+'c', file.read(value_size))
+                    value_bytes, = struct.unpack('<i', file.read(4))
+                    value = struct.unpack('<'+str(value_bytes)+'c', file.read(value_bytes))
                     value = b"".join(value)
                     
                     if id > 255: # Why are there material values for id 256?
@@ -252,6 +306,7 @@ def import_vox(path, voxel_size=1, gamma_correct=True, gamma_value=2.2, import_p
                         materials[id-1] = [mat[0], mat[1], mat[2], float(value)] # Emission
                     elif key == b'_flux':
                         materials[id-1] = [mat[0], mat[1], mat[2], mat[3]*(float(value)+1)] # Emission Power
+
 
             else:
                 file.read(h_size)
@@ -291,6 +346,7 @@ def import_vox(path, voxel_size=1, gamma_correct=True, gamma_value=2.2, import_p
     for obj in objects:
         obj.generate(import_palette, file_name, voxel_size)
 
+################################################################################################################################################
 
 def menu_func_import(self, context):
     self.layout.operator(ImportVox.bl_idname, text="MagicaVoxel (.vox)")
