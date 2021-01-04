@@ -3,7 +3,7 @@ import os
 import bpy
 import bmesh
 from bpy_extras.io_utils import ImportHelper
-from bpy.props import StringProperty, IntProperty, FloatProperty, BoolProperty, CollectionProperty
+from bpy.props import StringProperty, IntProperty, FloatProperty, BoolProperty, CollectionProperty, EnumProperty
 from bpy.types import Operator
 
 import struct
@@ -11,7 +11,7 @@ import struct
 bl_info = {
     "name": "MagicaVoxel VOX Importer",
     "author": "TechnistGuru",
-    "version": (1, 0, 2),
+    "version": (1, 0, 3),
     "blender": (2, 80, 0),
     "location": "File > Import-Export",
     "description": "Import MagicaVoxel .vox files",
@@ -36,17 +36,26 @@ class ImportVox(Operator, ImportHelper):
         options={'HIDDEN'},
     )
 
-    voxel_size: FloatProperty(name = "Voxel Size", default=1.0)
+    voxel_size: FloatProperty(name = "Voxel Size",
+                                description = "Side length, in blender units, of each voxel.",
+                                default=1.0)
+    
+    material_type: EnumProperty(name = "Material Type",
+                                description = "How color and material data is imported",
+                                items = (
+                                    ('None', 'None', "Don't import palette."),
+                                    ('SepMat', 'Separate Materials', "Create a material for each palette color."),
+                                    ('VertCol', 'Vertex Colors', "Create one material and store color and material data in vertex colors.")
+                                ),
+                                default = 'SepMat')
 
-    gamma_correct: BoolProperty(name="Gamma Correct Colors", default=True)
-    gamma_value: FloatProperty(name="Gamma Correction Value", default=2.2, min=0)
+    gamma_correct: BoolProperty(name = "Gamma Correct Colors",
+                                description = "Changes the gamma of colors to look closer to how they look in MagicaVoxel.",
+                                default = True)
+    gamma_value: FloatProperty(name = "Gamma Correction Value",
+                                default=2.2, min=0)
     
-    # Determins if palette colors are used.
-    import_palette: BoolProperty(name="Import Palette", default=True) 
-    # Determins if palette materials are used. Requires import_palette to be true and dosen't support all materials.
-    import_materials: BoolProperty(name="Import Materials", default=True)
-    
-    override_materials: BoolProperty(name="Override Existing Materials", default=True)
+    override_materials: BoolProperty(name = "Override Existing Materials", default = True)
 
     def execute(self, context):
         paths = [os.path.join(self.directory, name.name) for name in self.files]
@@ -54,7 +63,7 @@ class ImportVox(Operator, ImportHelper):
             paths.append(self.filepath)
         
         for path in paths:
-            import_vox(path, self.voxel_size, self.gamma_correct, self.gamma_value, self.import_palette, self.import_materials, self.override_materials)
+            import_vox(path, self.voxel_size, self.material_type, self.gamma_correct, self.gamma_value, self.override_materials)
         
         return {"FINISHED"}
 
@@ -90,7 +99,7 @@ class VoxelObject:
         
         return 0
     
-    def generate(self, use_mat, file_name, vox_size):
+    def generate(self, file_name, vox_size, mat_type, palette, materials):
         objects = []
         
         for Col in self.used_colors: # Create an object for each color and then join them.
@@ -179,8 +188,30 @@ class VoxelObject:
                                         
             mesh.from_pydata(verts, [], faces)
             
-            if use_mat:
+            if mat_type == 'SepMat':
                 obj.data.materials.append(bpy.data.materials.get(file_name + " #" + str(Col)))
+            
+            elif mat_type == 'VertCol':
+                obj.data.materials.append(bpy.data.materials.get(file_name))
+                
+                # Create Vertex Colors
+                bpy.context.view_layer.objects.active = obj
+                bpy.ops.mesh.vertex_color_add() # Color
+                bpy.ops.mesh.vertex_color_add() # Materials
+                bpy.context.object.data.vertex_colors["Col.001"].name = "Mat"
+                
+                # Set Vertex Colors
+                color_layer = mesh.vertex_colors["Col"]
+                material_layer = mesh.vertex_colors["Mat"]
+                
+                i = 0
+                for poly in mesh.polygons:
+                    for idx in poly.loop_indices:
+                        color_layer.data[i].color = palette[Col-1]
+                        #                                                                                        Map emit value from [0,5] to [0,1]
+                        material_layer.data[i].color = [materials[Col-1][0], materials[Col-1][1], materials[Col-1][2], materials[Col-1][3]/5]
+                        i += 1
+                
         
         bpy.ops.object.select_all(action='DESELECT')
         for obj in objects:
@@ -203,14 +234,14 @@ class VoxelObject:
 ################################################################################################################################################
 ################################################################################################################################################
 
-def import_vox(path, voxel_size=1, gamma_correct=True, gamma_value=2.2, import_palette=True, import_materials=True, override_materials=True):
+def import_vox(path, voxel_size=1, mat_type='SepMat', gamma_correct=True, gamma_value=2.2, override_materials=True):
     
     with open(path, 'rb') as file:
         file_name = os.path.basename(file.name).replace('.vox', '')
         file_size = os.path.getsize(path)
         
         palette = []
-        materials = [[0, 0, 0, 0]]*255 # [roughness, metallic, glass, emission] * 255
+        materials = [[0.5, 0.0, 0.0, 0.0] for _ in range(255)] # [roughness, metallic, glass, emission] * 255
         
         # Makes sure it's supported vox file
         assert (struct.unpack('<4ci', file.read(8)) == (b'V', b'O', b'X', b' ', 150))
@@ -222,6 +253,7 @@ def import_vox(path, voxel_size=1, gamma_correct=True, gamma_value=2.2, import_p
         
         objects = []
         
+        ### Parse File ###
         while file.tell() < file_size:
             *name, h_size, h_children = struct.unpack('<4cii', file.read(12))
             name = b"".join(name)
@@ -275,7 +307,8 @@ def import_vox(path, voxel_size=1, gamma_correct=True, gamma_value=2.2, import_p
             
             elif name == b'RGBA':
                 for _ in range(255):
-                    palette.append(struct.unpack('<4B', file.read(4)))
+                    rgba = struct.unpack('<4B', file.read(4))
+                    palette.append([float(col)/255 for col in rgba])
                 file.read(4) # Contains a 256th color for some reason.
             
             elif name == b'MATL':
@@ -297,54 +330,97 @@ def import_vox(path, voxel_size=1, gamma_correct=True, gamma_value=2.2, import_p
                     mat = materials[id-1]
                     
                     if key == b'_rough':
-                        materials[id-1] = [float(value), mat[1], mat[2], mat[3]] # Roughness
+                        materials[id-1][0] = float(value) # Roughness
                     elif key == b'_metal':
-                        materials[id-1] = [mat[0], float(value), mat[2], mat[3]] # Metalic
+                        materials[id-1][1] = float(value) # Metalic
                     elif key == b'_alpha':
-                        materials[id-1] = [mat[0], mat[1], float(value), mat[3]] # Glass
+                        materials[id-1][2] = float(value) # Glass
                     elif key == b'_emit':
-                        materials[id-1] = [mat[0], mat[1], mat[2], float(value)] # Emission
+                        materials[id-1][3] = float(value) # Emission
                     elif key == b'_flux':
-                        materials[id-1] = [mat[0], mat[1], mat[2], mat[3]*(float(value)+1)] # Emission Power
+                        materials[id-1][3] *= float(value)+1 # Emission Power
 
 
             else:
                 file.read(h_size)
     
+    ### Import Options ###
+    
     if not gamma_correct:
         gamma_value = 1
     
-    if import_palette:
+    if mat_type == 'SepMat': # Create material for every palette color.
         for id, col in enumerate(palette):
             
-            col = (pow(col[0]/255, gamma_value), pow(col[1]/255, gamma_value), pow(col[2]/255, gamma_value), col[3]/255)
+            col = (pow(col[0], gamma_value), pow(col[1], gamma_value), pow(col[2], gamma_value), col[3])
             
             name = file_name + " #" + str(id+1)
             
             if name in bpy.data.materials:
-                if not override_materials:
+                if not override_materials: # Don't change materials.
                     continue
-                mat = bpy.data.materials[name]
-            else:
-                mat = bpy.data.materials.new(name = name)
-                mat.use_nodes = True
+                # Delete material and recreate it.
+                bpy.data.materials.remove(bpy.data.materials[name])
+            
+            mat = bpy.data.materials.new(name = name)
+            mat.use_nodes = True
+            mat.diffuse_color = col
             
             nodes = mat.node_tree.nodes
+            
             bsdf = nodes["Principled BSDF"]
             bsdf.inputs["Base Color"].default_value = col
-            bsdf.inputs["Emission Strength"].default_value = 0
             
-            if import_materials:
-                bsdf.inputs["Roughness"].default_value = materials[id][0]
-                bsdf.inputs["Metallic"].default_value = materials[id][1]
-                bsdf.inputs["Transmission"].default_value = materials[id][2]
-                bsdf.inputs["Emission Strength"].default_value = materials[id][3] * 20
-                bsdf.inputs["Emission"].default_value = col
+            bsdf.inputs["Roughness"].default_value = materials[id][0]
+            bsdf.inputs["Metallic"].default_value = materials[id][1]
+            bsdf.inputs["Transmission"].default_value = materials[id][2]
+            bsdf.inputs["Emission Strength"].default_value = materials[id][3] * 20
+            bsdf.inputs["Emission"].default_value = col
+                
+    elif mat_type == 'VertCol': # Create one material that uses vertex colors.
+        name = file_name
+        create_mat = True
+        
+        if name in bpy.data.materials: # Material already exists.
+            if override_materials:
+                # Delete material and recreate it.
+                bpy.data.materials.remove(bpy.data.materials[name])
+            else:
+                # Don't change materials.
+                create_mat = False
+        
+        if create_mat: # Materials don't already exist or materials are being overriden.
+            mat = bpy.data.materials.new(name = name)
+            mat.use_nodes = True
             
-            mat.diffuse_color = col
+            nodes = mat.node_tree.nodes
+            links = mat.node_tree.links
+            
+            bsdf = nodes["Principled BSDF"]
+            
+            vc_color = nodes.new("ShaderNodeVertexColor")
+            vc_color.layer_name = "Col"
+            vc_mat = nodes.new("ShaderNodeVertexColor")
+            vc_mat.layer_name = "Mat"
+
+            sepRGB = nodes.new("ShaderNodeSeparateRGB")
+            multiply = nodes.new("ShaderNodeMath")
+            multiply.operation = "MULTIPLY"
+            multiply.inputs[1].default_value = 100
+
+            links.new(vc_color.outputs["Color"], bsdf.inputs["Base Color"])
+            links.new(vc_mat.outputs["Color"], sepRGB.inputs["Image"])
+            links.new(sepRGB.outputs["R"], bsdf.inputs["Roughness"])
+            links.new(sepRGB.outputs["G"], bsdf.inputs["Metallic"])
+            links.new(sepRGB.outputs["B"], bsdf.inputs["Transmission"])
+            links.new(vc_color.outputs["Color"], bsdf.inputs["Emission"])
+            links.new(vc_mat.outputs["Alpha"], multiply.inputs[0])
+            links.new(multiply.outputs[0], bsdf.inputs["Emission Strength"])
+            
     
+    ### Generate Objects ###
     for obj in objects:
-        obj.generate(import_palette, file_name, voxel_size)
+        obj.generate(file_name, voxel_size, mat_type, palette, materials)
 
 ################################################################################################################################################
 
