@@ -444,6 +444,7 @@ def import_vox(path, voxel_size=1, mat_type='SepMat', gamma_correct=True, gamma_
             
             col_img = bpy.data.images.new(name + '_col', width = 256, height = 1)
             mat_img = bpy.data.images.new(name + '_mat', width = 256, height = 1)
+            mat_img.colorspace_settings.name = 'Non-Color'
             col_pixels = []
             mat_pixels = []
             
