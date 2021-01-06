@@ -11,7 +11,7 @@ import struct
 bl_info = {
     "name": "MagicaVoxel VOX Importer",
     "author": "TechnistGuru",
-    "version": (1, 0, 3),
+    "version": (1, 0, 4),
     "blender": (2, 80, 0),
     "location": "File > Import-Export",
     "description": "Import MagicaVoxel .vox files",
@@ -40,17 +40,18 @@ class ImportVox(Operator, ImportHelper):
                                 description = "Side length, in blender units, of each voxel.",
                                 default=1.0)
     
-    material_type: EnumProperty(name = "Material Type",
+    material_type: EnumProperty(name = "Palette Import Method",
                                 description = "How color and material data is imported",
                                 items = (
                                     ('None', 'None', "Don't import palette."),
                                     ('SepMat', 'Separate Materials', "Create a material for each palette color."),
-                                    ('VertCol', 'Vertex Colors', "Create one material and store color and material data in vertex colors.")
+                                    ('VertCol', 'Vertex Colors', "Create one material and store color and material data in vertex colors."),
+                                    ('Tex', 'Textures', "Generates textures to store color and material data.")
                                 ),
                                 default = 'SepMat')
 
     gamma_correct: BoolProperty(name = "Gamma Correct Colors",
-                                description = "Changes the gamma of colors to look closer to how they look in MagicaVoxel.",
+                                description = "Changes the gamma of colors to look closer to how they look in MagicaVoxel. Only applies if Palette Import Method is Seperate Materials.",
                                 default = True)
     gamma_value: FloatProperty(name = "Gamma Correction Value",
                                 default=2.2, min=0)
@@ -211,6 +212,14 @@ class VoxelObject:
                         #                                                                                        Map emit value from [0,5] to [0,1]
                         material_layer.data[i].color = [materials[Col-1][0], materials[Col-1][1], materials[Col-1][2], materials[Col-1][3]/5]
                         i += 1
+            
+            elif mat_type == 'Tex':
+                obj.data.materials.append(bpy.data.materials.get(file_name))
+                
+                # Create UVs
+                uv = obj.data.uv_layers.new(name="UVMap")
+                for loop in obj.data.loops:
+                    uv.data[loop.index].uv = [(Col-0.5)/256, 0.5]
                 
         
         bpy.ops.object.select_all(action='DESELECT')
@@ -257,7 +266,6 @@ def import_vox(path, voxel_size=1, mat_type='SepMat', gamma_correct=True, gamma_
         while file.tell() < file_size:
             *name, h_size, h_children = struct.unpack('<4cii', file.read(12))
             name = b"".join(name)
-            print(name)
             
             if name == b'SIZE': # Size of object.
                 x, y, z = struct.unpack('<3i', file.read(12))
@@ -415,6 +423,72 @@ def import_vox(path, voxel_size=1, mat_type='SepMat', gamma_correct=True, gamma_
             links.new(sepRGB.outputs["B"], bsdf.inputs["Transmission"])
             links.new(vc_color.outputs["Color"], bsdf.inputs["Emission"])
             links.new(vc_mat.outputs["Alpha"], multiply.inputs[0])
+            links.new(multiply.outputs[0], bsdf.inputs["Emission Strength"])
+    
+    elif mat_type == 'Tex':  # Generates textures to store color and material data.
+        name = file_name
+        create_mat = True
+        
+        if name in bpy.data.materials: # Material already exists.
+            if override_materials:
+                # Delete material + texture and recreate it.
+                bpy.data.materials.remove(bpy.data.materials[name])
+                bpy.data.images.remove(bpy.data.images[name + '_col'])
+                bpy.data.images.remove(bpy.data.images[name + '_mat'])
+            else:
+                # Don't change materials.
+                create_mat = False
+        
+        if create_mat:
+            ## Generate Texture
+            
+            col_img = bpy.data.images.new(name + '_col', width = 256, height = 1)
+            mat_img = bpy.data.images.new(name + '_mat', width = 256, height = 1)
+            col_pixels = []
+            mat_pixels = []
+            
+            for i in range(255):
+                col = palette[i]
+                mat = materials[i]
+                
+                col_pixels += col
+                #                                  Map emit value from [0,5] to [0,1]
+                mat_pixels += [mat[0], mat[1], mat[2], mat[3]/5]
+            
+            col_pixels += [0,0,0,0]
+            mat_pixels += [0,0,0,0]
+            
+            col_img.pixels = col_pixels
+            mat_img.pixels = mat_pixels
+            
+            
+            ## Create Material
+            
+            mat = bpy.data.materials.new(name = name)
+            mat.use_nodes = True
+            
+            nodes = mat.node_tree.nodes
+            links = mat.node_tree.links
+            
+            bsdf = nodes["Principled BSDF"]
+            
+            col_tex = nodes.new("ShaderNodeTexImage")
+            col_tex.image = col_img
+            mat_tex = nodes.new("ShaderNodeTexImage")
+            mat_tex.image = mat_img
+            
+            sepRGB = nodes.new("ShaderNodeSeparateRGB")
+            multiply = nodes.new("ShaderNodeMath")
+            multiply.operation = "MULTIPLY"
+            multiply.inputs[1].default_value = 100
+            
+            links.new(col_tex.outputs["Color"], bsdf.inputs["Base Color"])
+            links.new(mat_tex.outputs["Color"], sepRGB.inputs["Image"])
+            links.new(sepRGB.outputs["R"], bsdf.inputs["Roughness"])
+            links.new(sepRGB.outputs["G"], bsdf.inputs["Metallic"])
+            links.new(sepRGB.outputs["B"], bsdf.inputs["Transmission"])
+            links.new(col_tex.outputs["Color"], bsdf.inputs["Emission"])
+            links.new(mat_tex.outputs["Alpha"], multiply.inputs[0])
             links.new(multiply.outputs[0], bsdf.inputs["Emission Strength"])
             
     
