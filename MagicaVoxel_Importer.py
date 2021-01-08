@@ -11,7 +11,7 @@ import struct
 bl_info = {
     "name": "MagicaVoxel VOX Importer",
     "author": "TechnistGuru",
-    "version": (1, 0, 4),
+    "version": (1, 0, 5),
     "blender": (2, 80, 0),
     "location": "File > Import-Export",
     "description": "Import MagicaVoxel .vox files",
@@ -92,6 +92,7 @@ class VoxelObject:
             
             if vox[3] not in self.used_colors:
                 self.used_colors.append(vox[3])
+            
     
     def getVox(self, pos):
         key = pos._index()
@@ -102,6 +103,9 @@ class VoxelObject:
     
     def generate(self, file_name, vox_size, mat_type, palette, materials):
         objects = []
+        
+        if len(self.used_colors) == 0: # Empty Object
+            return
         
         for Col in self.used_colors: # Create an object for each color and then join them.
             
@@ -337,13 +341,16 @@ def import_vox(path, voxel_size=1, mat_type='SepMat', gamma_correct=True, gamma_
                     
                     mat = materials[id-1]
                     
+                    if key == b'_type':
+                        type = value
+                    
                     if key == b'_rough':
                         materials[id-1][0] = float(value) # Roughness
-                    elif key == b'_metal':
+                    elif key == b'_metal' and type == b'_metal':
                         materials[id-1][1] = float(value) # Metalic
-                    elif key == b'_alpha':
+                    elif key == b'_alpha' and type == b'_glass':
                         materials[id-1][2] = float(value) # Glass
-                    elif key == b'_emit':
+                    elif key == b'_emit' and type == b'_emit':
                         materials[id-1][3] = float(value) # Emission
                     elif key == b'_flux':
                         materials[id-1][3] *= float(value)+1 # Emission Power
