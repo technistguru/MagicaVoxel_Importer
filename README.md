@@ -23,3 +23,4 @@ Go to `File > Import > MagicaVoxel (.vox)` and select the file you want to impor
 - `Gamma Correct Colors`: In order to make the Blender models look similar to how they look in MagicaVoxel, the colors have to be gamma corrected. Only applies if `Palette Import Method` is `Separate Materials`.
 - `Gamma Correction Value`: The power that color values are raised to for gamma correction.
 - `Override Existing Materials`: Specifies whether material properties should be overriden if materials have already been generated for this file before. Disable if you are reimporting a model whose materials you have modified in blender.
+- `Cleanup Mesh`: Merge overlapping verticies and recalculate normals.

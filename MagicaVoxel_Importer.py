@@ -11,7 +11,7 @@ import struct
 bl_info = {
     "name": "MagicaVoxel VOX Importer",
     "author": "TechnistGuru",
-    "version": (1, 1, 0),
+    "version": (1, 1, 1),
     "blender": (2, 80, 0),
     "location": "File > Import-Export",
     "description": "Import MagicaVoxel .vox files",
@@ -58,6 +58,8 @@ class ImportVox(Operator, ImportHelper):
     
     override_materials: BoolProperty(name = "Override Existing Materials", default = True)
     
+    cleanup_mesh: BoolProperty(name = "Cleanup Mesh", default = True)
+    
 
     def execute(self, context):
         paths = [os.path.join(self.directory, name.name) for name in self.files]
@@ -65,7 +67,7 @@ class ImportVox(Operator, ImportHelper):
             paths.append(self.filepath)
         
         for path in paths:
-            import_vox(path, self.voxel_size, self.material_type, self.gamma_correct, self.gamma_value, self.override_materials)
+            import_vox(path, self.voxel_size, self.material_type, self.gamma_correct, self.gamma_value, self.override_materials, self.cleanup_mesh)
         
         return {"FINISHED"}
     
@@ -84,6 +86,8 @@ class ImportVox(Operator, ImportHelper):
                 layout.prop(self, "gamma_value")
         if self.material_type != 'None':
             layout.prop(self, "override_materials")
+        
+        layout.prop(self, "cleanup_mesh")
 
 ################################################################################################################################################
 ################################################################################################################################################
@@ -119,7 +123,7 @@ class VoxelObject:
         
         return 0
     
-    def generate(self, file_name, vox_size, mat_type, palette, materials):
+    def generate(self, file_name, vox_size, mat_type, palette, materials, cleanup):
         objects = []
         
         if len(self.used_colors) == 0: # Empty Object
@@ -260,6 +264,14 @@ class VoxelObject:
         # Set scale and position.
         obj.location = [self.position.x*vox_size, self.position.y*vox_size, self.position.z*vox_size]
         obj.scale = [vox_size, vox_size, vox_size]
+        
+        # Cleanup Mesh
+        if cleanup:
+            bpy.ops.object.editmode_toggle()
+            bpy.ops.mesh.select_all(action='SELECT')
+            bpy.ops.mesh.remove_doubles()
+            bpy.ops.mesh.normals_make_consistent(inside=False)
+            bpy.ops.object.editmode_toggle()
 
 
 ################################################################################################################################################
@@ -294,7 +306,7 @@ def read_dict(content):
     
     return dict
 
-def import_vox(path, voxel_size=1, mat_type='SepMat', gamma_correct=True, gamma_value=2.2, override_materials=True):
+def import_vox(path, voxel_size=1, mat_type='SepMat', gamma_correct=True, gamma_value=2.2, override_materials=True, cleanup_mesh=True):
     
     with open(path, 'rb') as file:
         file_name = os.path.basename(file.name).replace('.vox', '')
@@ -577,7 +589,7 @@ def import_vox(path, voxel_size=1, mat_type='SepMat', gamma_correct=True, gamma_
     
     ### Generate Objects ###
     for model in models.values():
-        model.generate(file_name, voxel_size, mat_type, palette, materials)
+        model.generate(file_name, voxel_size, mat_type, palette, materials, cleanup_mesh)
 
 ################################################################################################################################################
 
