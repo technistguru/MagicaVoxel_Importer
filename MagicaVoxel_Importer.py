@@ -11,7 +11,7 @@ import struct
 bl_info = {
     "name": "MagicaVoxel VOX Importer",
     "author": "TechnistGuru",
-    "version": (1, 0, 5),
+    "version": (1, 1, 0),
     "blender": (2, 80, 0),
     "location": "File > Import-Export",
     "description": "Import MagicaVoxel .vox files",
@@ -40,7 +40,7 @@ class ImportVox(Operator, ImportHelper):
                                 description = "Side length, in blender units, of each voxel.",
                                 default=1.0)
     
-    material_type: EnumProperty(name = "Palette Import Method",
+    material_type: EnumProperty(name = "",
                                 description = "How color and material data is imported",
                                 items = (
                                     ('None', 'None', "Don't import palette."),
@@ -57,6 +57,7 @@ class ImportVox(Operator, ImportHelper):
                                 default=2.2, min=0)
     
     override_materials: BoolProperty(name = "Override Existing Materials", default = True)
+    
 
     def execute(self, context):
         paths = [os.path.join(self.directory, name.name) for name in self.files]
@@ -67,6 +68,22 @@ class ImportVox(Operator, ImportHelper):
             import_vox(path, self.voxel_size, self.material_type, self.gamma_correct, self.gamma_value, self.override_materials)
         
         return {"FINISHED"}
+    
+    def draw(self, context):
+        layout = self.layout
+        
+        layout.prop(self, "voxel_size")
+        
+        mat_type = layout.column(align=True)
+        mat_type.label(text = "Palette Import Method:")
+        mat_type.prop(self, "material_type")
+        
+        if self.material_type == 'SepMat':
+            layout.prop(self, "gamma_correct")
+            if self.gamma_correct:
+                layout.prop(self, "gamma_value")
+        if self.material_type != 'None':
+            layout.prop(self, "override_materials")
 
 ################################################################################################################################################
 ################################################################################################################################################
@@ -84,6 +101,7 @@ class VoxelObject:
         self.voxels = {}
         self.used_colors = []
         self.position = Vec3(0, 0, 0)
+        self.rotation = Vec3(0, 0, 0)
         
         for vox in Voxels:
             #              x       y       z
@@ -247,6 +265,35 @@ class VoxelObject:
 ################################################################################################################################################
 ################################################################################################################################################
 
+def read_chunk(buffer):
+    *name, h_size, h_children = struct.unpack('<4cii', buffer.read(12))
+    name = b"".join(name)
+    content = bytearray(buffer.read(h_size))
+    return name, content
+
+def read_content(content, size):
+    out = content[:size]
+    del content[:size]
+    
+    return out
+
+def read_dict(content):
+    dict = {}
+    
+    dict_size, = struct.unpack('<i', read_content(content, 4))
+    for _ in range(dict_size):
+        key_bytes, = struct.unpack('<i', read_content(content, 4))
+        key = struct.unpack('<'+str(key_bytes)+'c', read_content(content, key_bytes))
+        key = b"".join(key)
+        
+        value_bytes, = struct.unpack('<i', read_content(content, 4))
+        value = struct.unpack('<'+str(value_bytes)+'c', read_content(content, value_bytes))
+        value = b"".join(value)
+        
+        dict[key] = value
+    
+    return dict
+
 def import_vox(path, voxel_size=1, mat_type='SepMat', gamma_correct=True, gamma_value=2.2, override_materials=True):
     
     with open(path, 'rb') as file:
@@ -264,80 +311,95 @@ def import_vox(path, voxel_size=1, mat_type='SepMat', gamma_correct=True, gamma_
         N, M = struct.unpack('<ii', file.read(8))
         assert (N == 0)
         
-        objects = []
+        models = {}  # {model id : VoxelObject}
+        mod_id = 0
+        
+        transforms = {}  # Transform Node {child id : [location, rotation]}
+        groups = {}  # Group Node {id : [children ids]}
+        shapes = {}  # Shape Node {id : [model ids]}
         
         ### Parse File ###
         while file.tell() < file_size:
-            *name, h_size, h_children = struct.unpack('<4cii', file.read(12))
-            name = b"".join(name)
+            name, content = read_chunk(file)
             
             if name == b'SIZE': # Size of object.
-                x, y, z = struct.unpack('<3i', file.read(12))
+                x, y, z = struct.unpack('<3i', read_content(content, 12))
                 size = Vec3(x, y, z)
             
-            elif name == b'XYZI': # Location and color id of object.
+            elif name == b'XYZI': # Location and color id of voxel.
                 voxels = []
-                num_voxels, = struct.unpack('<i', file.read(4))
+                
+                num_voxels, = struct.unpack('<i', read_content(content, 4))
                 for voxel in range(num_voxels):
-                    voxel_data = struct.unpack('<4B', file.read(4))
+                    voxel_data = struct.unpack('<4B', read_content(content, 4))
                     voxels.append(voxel_data)
-                obj = VoxelObject(voxels, size)
-                objects.append(obj)
+                
+                model = VoxelObject(voxels, size)
+                models[mod_id] = model
+                mod_id += 1
+            
             
             elif name == b'nTRN': # Position and rotation of object.
-                id, = struct.unpack('<i', file.read(4))
+                id, = struct.unpack('<i', read_content(content, 4))
                 
                 # Don't need node attributes.
-                dict_size, = struct.unpack('<i', file.read(4))
-                for _ in range(dict_size):
-                    key_bytes, = struct.unpack('<i', file.read(4))
-                    key = struct.unpack('<'+str(key_bytes)+'c', file.read(key_bytes))
-                    value_bytes, = struct.unpack('<i', file.read(4))
-                    file.read(value_bytes)
+                _ = read_dict(content)
                 
-                # Frames must always be 1.
-                child_id, _, _, frames, = struct.unpack('<4i', file.read(16))
-                # Converts location of object's XYZI chunk in file to location of object in objects list.
-                child_id = int((child_id-1)/2)-1
-                # child_id is actually the id of a shape chunk and not an xyzi chunk but as long as the order hasn't been changed this will work.
+                child_id, _, _, _, = struct.unpack('<4i', read_content(content, 16))
+                transforms[child_id] = [Vec3(0, 0, 0), Vec3(0, 0, 0)]
                 
-                dict_size, = struct.unpack('<i', file.read(4))
-                for _ in range(dict_size):
-                    key_bytes, = struct.unpack('<i', file.read(4))
-                    key = struct.unpack('<'+str(key_bytes)+'c', file.read(key_bytes))
-                    key = b"".join(key)
+                frames = read_dict(content)
+                for key in frames:
+                    if key == b'_r':  # Rotation
+                        pass # Can't figure out how to read rotation.
                     
-                    value_bytes, = struct.unpack('<i', file.read(4))
-                    value = struct.unpack('<'+str(value_bytes)+'c', file.read(value_bytes))
-                    value = b"".join(value)
-                    value = value.decode('utf-8')
-                    
-                    if key == b'_t' and child_id < len(objects): # Translation
-                        value = value.split()
-                        objects[child_id].position = Vec3(int(value[0]), int(value[1]), int(value[2]))
+                    elif key == b'_t':  # Translation
+                        value = frames[key].decode('utf-8').split()
+                        transforms[child_id][0] = Vec3(int(value[0]), int(value[1]), int(value[2]))
             
+            elif name == b'nGRP':
+                id, = struct.unpack('<i', read_content(content, 4))
+                
+                # Don't need node attributes.
+                _ = read_dict(content)
+                
+                num_child, = struct.unpack('<i', read_content(content, 4))
+                children = []
+                
+                for _ in range(num_child):
+                    children.append(struct.unpack('<i', read_content(content, 4))[0])
+                
+                groups[id] = children
+            
+            elif name == b'nSHP':
+                id, = struct.unpack('<i', read_content(content, 4))
+                
+                # Don't need node attributes.
+                _ = read_dict(content)
+                
+                num_models, = struct.unpack('<i', read_content(content, 4))
+                model_ids = []
+                
+                for _ in range(num_models):
+                    model_ids.append(struct.unpack('<i', read_content(content, 4))[0])
+                    _ = read_dict(content)  # Don't need model attributes.
+                
+                shapes[id] = model_ids
             
             elif name == b'RGBA':
                 for _ in range(255):
-                    rgba = struct.unpack('<4B', file.read(4))
+                    rgba = struct.unpack('<4B', read_content(content, 4))
                     palette.append([float(col)/255 for col in rgba])
-                file.read(4) # Contains a 256th color for some reason.
+                del content[:4] # Contains a 256th color for some reason.
             
             elif name == b'MATL':
-                id, = struct.unpack('<i', file.read(4))
-                dict_size, = struct.unpack('<i', file.read(4)) # Number of key:value pairs in material dictionary.
+                id, = struct.unpack('<i', read_content(content, 4))
+                if id > 255: continue # Why are there material values for id 256?
                 
-                for _ in range(dict_size):
-                    key_bytes, = struct.unpack('<i', file.read(4))
-                    key = struct.unpack('<'+str(key_bytes)+'c', file.read(key_bytes))
-                    key = b"".join(key)
-                    
-                    value_bytes, = struct.unpack('<i', file.read(4))
-                    value = struct.unpack('<'+str(value_bytes)+'c', file.read(value_bytes))
-                    value = b"".join(value)
-                    
-                    if id > 255: # Why are there material values for id 256?
-                        continue
+                mat_dict = read_dict(content)
+                
+                for key in mat_dict:
+                    value = mat_dict[key]
                     
                     mat = materials[id-1]
                     
@@ -354,10 +416,8 @@ def import_vox(path, voxel_size=1, mat_type='SepMat', gamma_correct=True, gamma_
                         materials[id-1][3] = float(value) # Emission
                     elif key == b'_flux':
                         materials[id-1][3] *= float(value)+1 # Emission Power
-
-
-            else:
-                file.read(h_size)
+                        
+                        
     
     ### Import Options ###
     
@@ -498,11 +558,26 @@ def import_vox(path, voxel_size=1, mat_type='SepMat', gamma_correct=True, gamma_
             links.new(col_tex.outputs["Color"], bsdf.inputs["Emission"])
             links.new(mat_tex.outputs["Alpha"], multiply.inputs[0])
             links.new(multiply.outputs[0], bsdf.inputs["Emission Strength"])
+    
+    
+    ### Apply Transforms ##
+    for trans_child in transforms:
+        trans = transforms[trans_child]
+        
+        if trans_child in groups:
+            group_children = groups[trans_child]
+            # In my testing, group nodes never have valid
+            # children ids. Is the documentation incorrect?
+        
+        if trans_child in shapes:
+            shape_children = shapes[trans_child]
             
+            for model_id in shape_children:
+                models[model_id].position = trans[0]
     
     ### Generate Objects ###
-    for obj in objects:
-        obj.generate(file_name, voxel_size, mat_type, palette, materials)
+    for model in models.values():
+        model.generate(file_name, voxel_size, mat_type, palette, materials)
 
 ################################################################################################################################################
 
