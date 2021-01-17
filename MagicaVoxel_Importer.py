@@ -11,7 +11,7 @@ import struct
 bl_info = {
     "name": "MagicaVoxel VOX Importer",
     "author": "TechnistGuru",
-    "version": (1, 1, 1),
+    "version": (1, 2, 0),
     "blender": (2, 80, 0),
     "location": "File > Import-Export",
     "description": "Import MagicaVoxel .vox files",
@@ -58,7 +58,22 @@ class ImportVox(Operator, ImportHelper):
     
     override_materials: BoolProperty(name = "Override Existing Materials", default = True)
     
-    cleanup_mesh: BoolProperty(name = "Cleanup Mesh", default = True)
+    cleanup_mesh: BoolProperty(name = "Cleanup Mesh",
+                                description = "Merge overlapping verticies and recalculate normals.",
+                                default = True)
+    
+    create_lights: BoolProperty(name = "Add Point Lights",
+                                description = "Add point lights at emissive voxels for Eevee.",
+                                default = False)
+    
+    #todo
+    create_volume: BoolProperty(name = "Generate Volumes",
+                                description = "Create volume objects for volumetric voxels.",
+                                default = False)
+    
+    organize: BoolProperty(name = "Organize Objects",
+                            description = "Organize objects into collections.",
+                            default = True)
     
 
     def execute(self, context):
@@ -67,7 +82,7 @@ class ImportVox(Operator, ImportHelper):
             paths.append(self.filepath)
         
         for path in paths:
-            import_vox(path, self.voxel_size, self.material_type, self.gamma_correct, self.gamma_value, self.override_materials, self.cleanup_mesh)
+            import_vox(path, self)
         
         return {"FINISHED"}
     
@@ -76,9 +91,9 @@ class ImportVox(Operator, ImportHelper):
         
         layout.prop(self, "voxel_size")
         
-        mat_type = layout.column(align=True)
-        mat_type.label(text = "Palette Import Method:")
-        mat_type.prop(self, "material_type")
+        material_type = layout.column(align=True)
+        material_type.label(text = "Palette Import Method:")
+        material_type.prop(self, "material_type")
         
         if self.material_type == 'SepMat':
             layout.prop(self, "gamma_correct")
@@ -88,6 +103,9 @@ class ImportVox(Operator, ImportHelper):
             layout.prop(self, "override_materials")
         
         layout.prop(self, "cleanup_mesh")
+        layout.prop(self, "create_lights")
+        #layout.prop(self, "create_volume")
+        layout.prop(self, "organize")
 
 ################################################################################################################################################
 ################################################################################################################################################
@@ -123,8 +141,24 @@ class VoxelObject:
         
         return 0
     
-    def generate(self, file_name, vox_size, mat_type, palette, materials, cleanup):
+    def compareVox(self, colA, b):
+        colB = self.getVox(b)
+        
+        if colB == 0:
+            return False
+        return True
+    
+    def addLight(self, name, pos, light):
+        
+        return light_obj
+    
+    def generate(self, file_name, vox_size, material_type, palette, materials, cleanup, collections):
         objects = []
+        lights = []
+        
+        self.materials = materials  # For helper functions.
+        
+        mesh_col, light_col, volume_col = collections
         
         if len(self.used_colors) == 0: # Empty Object
             return
@@ -133,7 +167,21 @@ class VoxelObject:
             
             mesh = bpy.data.meshes.new(file_name) # Create mesh
             obj = bpy.data.objects.new(file_name, mesh) # Create object
-            bpy.context.scene.collection.objects.link(obj) # Link object to scene
+            
+            # Create light data
+            if light_col != None and materials[Col-1][3] > 0:
+                light_data = bpy.data.lights.new(name=file_name+"_"+str(Col), type="POINT")
+                light_data.color = palette[Col-1][:3]
+                light_data.energy = materials[Col-1][3] * 500 * vox_size
+                light_data.specular_factor = 0  # Don't want circular reflections.
+                light_data.shadow_soft_size = vox_size/2
+                light_data.shadow_buffer_clip_start = vox_size
+            
+            # Link Object to Scene
+            if mesh_col == None:
+                bpy.context.scene.collection.objects.link(obj)
+            else:
+                mesh_col.objects.link(obj)
             
             objects.append(obj) # Keeps track of created objects for joining.
             
@@ -141,84 +189,92 @@ class VoxelObject:
             faces = []
             
             for key in self.voxels:
-                        pos, colID = self.voxels[key]
-                        x, y, z = pos.x, pos.y, pos.z
-                        
-                        if colID != Col:
-                            continue
-                        
-                        if self.getVox(Vec3(x+1, y, z)) == 0:
-                            verts.append( (x+1, y, z) )
-                            verts.append( (x+1, y+1, z) )
-                            verts.append( (x+1, y+1, z+1) )
-                            verts.append( (x+1, y, z+1) )
+                pos, colID = self.voxels[key]
+                x, y, z = pos.x, pos.y, pos.z
+                
+                if colID != Col:
+                    continue
+                
+                # Lights
+                if light_col != None and materials[Col-1][3] > 0:
+                    light_obj = bpy.data.objects.new(name=file_name+"_"+str(Col), object_data=light_data)
+                    light_obj.location = (x+0.5, y+0.5,z+0.5)  # Set location to center of voxel.
+                    light_col.objects.link(light_obj)
+                    lights.append(light_obj)
+                
                             
-                            faces.append( [len(verts)-4,
-                                            len(verts)-3,
-                                            len(verts)-2,
-                                            len(verts)-1] )
-                        
-                        if self.getVox(Vec3(x, y+1, z)) == 0:
-                            verts.append( (x+1, y+1, z) )
-                            verts.append( (x+1, y+1, z+1) )
-                            verts.append( (x, y+1, z+1) )
-                            verts.append( (x, y+1, z) )
-                            
-                            faces.append( [len(verts)-4,
-                                            len(verts)-3,
-                                            len(verts)-2,
-                                            len(verts)-1] )
-                        
-                        if self.getVox(Vec3(x, y, z+1)) == 0:
-                            verts.append( (x, y, z+1) )
-                            verts.append( (x, y+1, z+1) )
-                            verts.append( (x+1, y+1, z+1) )
-                            verts.append( (x+1, y, z+1) )
-                            
-                            faces.append( [len(verts)-4,
-                                            len(verts)-3,
-                                            len(verts)-2,
-                                            len(verts)-1] )
-                        
-                        if self.getVox(Vec3(x-1, y, z)) == 0:
-                            verts.append( (x, y, z) )
-                            verts.append( (x, y+1, z) )
-                            verts.append( (x, y+1, z+1) )
-                            verts.append( (x, y, z+1) )
-                            
-                            faces.append( [len(verts)-4,
-                                            len(verts)-3,
-                                            len(verts)-2,
-                                            len(verts)-1] )
-                        
-                        if self.getVox(Vec3(x, y-1, z)) == 0:
-                            verts.append( (x, y, z) )
-                            verts.append( (x, y, z+1) )
-                            verts.append( (x+1, y, z+1) )
-                            verts.append( (x+1, y, z) )
-                            
-                            faces.append( [len(verts)-4,
-                                            len(verts)-3,
-                                            len(verts)-2,
-                                            len(verts)-1] )
-                        
-                        if self.getVox(Vec3(x, y, z-1)) == 0:
-                            verts.append( (x, y, z) )
-                            verts.append( (x+1, y, z) )
-                            verts.append( (x+1, y+1, z) )
-                            verts.append( (x, y+1, z) )
-                            
-                            faces.append( [len(verts)-4,
-                                            len(verts)-3,
-                                            len(verts)-2,
-                                            len(verts)-1] )
+                if not self.compareVox(colID, Vec3(x+1, y, z)):
+                    verts.append( (x+1, y, z) )
+                    verts.append( (x+1, y+1, z) )
+                    verts.append( (x+1, y+1, z+1) )
+                    verts.append( (x+1, y, z+1) )
+                    
+                    faces.append( [len(verts)-4,
+                                    len(verts)-3,
+                                    len(verts)-2,
+                                    len(verts)-1] )
+                
+                if not self.compareVox(colID, Vec3(x, y+1, z)):
+                    verts.append( (x+1, y+1, z) )
+                    verts.append( (x+1, y+1, z+1) )
+                    verts.append( (x, y+1, z+1) )
+                    verts.append( (x, y+1, z) )
+                    
+                    faces.append( [len(verts)-4,
+                                    len(verts)-3,
+                                    len(verts)-2,
+                                    len(verts)-1] )
+                
+                if not self.compareVox(colID, Vec3(x, y, z+1)):
+                    verts.append( (x, y, z+1) )
+                    verts.append( (x, y+1, z+1) )
+                    verts.append( (x+1, y+1, z+1) )
+                    verts.append( (x+1, y, z+1) )
+                    
+                    faces.append( [len(verts)-4,
+                                    len(verts)-3,
+                                    len(verts)-2,
+                                    len(verts)-1] )
+                
+                if not self.compareVox(colID, Vec3(x-1, y, z)):
+                    verts.append( (x, y, z) )
+                    verts.append( (x, y+1, z) )
+                    verts.append( (x, y+1, z+1) )
+                    verts.append( (x, y, z+1) )
+                    
+                    faces.append( [len(verts)-4,
+                                    len(verts)-3,
+                                    len(verts)-2,
+                                    len(verts)-1] )
+                
+                if not self.compareVox(colID, Vec3(x, y-1, z)):
+                    verts.append( (x, y, z) )
+                    verts.append( (x, y, z+1) )
+                    verts.append( (x+1, y, z+1) )
+                    verts.append( (x+1, y, z) )
+                    
+                    faces.append( [len(verts)-4,
+                                    len(verts)-3,
+                                    len(verts)-2,
+                                    len(verts)-1] )
+                
+                if not self.compareVox(colID, Vec3(x, y, z-1)):
+                    verts.append( (x, y, z) )
+                    verts.append( (x+1, y, z) )
+                    verts.append( (x+1, y+1, z) )
+                    verts.append( (x, y+1, z) )
+                    
+                    faces.append( [len(verts)-4,
+                                    len(verts)-3,
+                                    len(verts)-2,
+                                    len(verts)-1] )
                                         
             mesh.from_pydata(verts, [], faces)
             
-            if mat_type == 'SepMat':
+            if material_type == 'SepMat':
                 obj.data.materials.append(bpy.data.materials.get(file_name + " #" + str(Col)))
             
-            elif mat_type == 'VertCol':
+            elif material_type == 'VertCol':
                 obj.data.materials.append(bpy.data.materials.get(file_name))
                 
                 # Create Vertex Colors
@@ -239,7 +295,7 @@ class VoxelObject:
                         material_layer.data[i].color = [materials[Col-1][0], materials[Col-1][1], materials[Col-1][2], materials[Col-1][3]/5]
                         i += 1
             
-            elif mat_type == 'Tex':
+            elif material_type == 'Tex':
                 obj.data.materials.append(bpy.data.materials.get(file_name))
                 
                 # Create UVs
@@ -261,9 +317,14 @@ class VoxelObject:
         obj.location = [int(-self.size.x/2), int(-self.size.y/2), int(-self.size.z/2)]
         bpy.ops.object.origin_set(type='ORIGIN_CURSOR', center='MEDIAN')
         
+        for light in lights:
+            light.parent = obj  # Parent Lights to Object
+            x, y, z = light.location  # Fix Location
+            light.location = [x+int(-self.size.x/2), y+int(-self.size.y/2), z+int(-self.size.z/2)]
+        
         # Set scale and position.
-        obj.location = [self.position.x*vox_size, self.position.y*vox_size, self.position.z*vox_size]
-        obj.scale = [vox_size, vox_size, vox_size]
+        bpy.ops.transform.translate(value=(self.position.x*vox_size, self.position.y*vox_size, self.position.z*vox_size))
+        bpy.ops.transform.resize(value=(vox_size, vox_size, vox_size))
         
         # Cleanup Mesh
         if cleanup:
@@ -306,7 +367,7 @@ def read_dict(content):
     
     return dict
 
-def import_vox(path, voxel_size=1, mat_type='SepMat', gamma_correct=True, gamma_value=2.2, override_materials=True, cleanup_mesh=True):
+def import_vox(path, options):
     
     with open(path, 'rb') as file:
         file_name = os.path.basename(file.name).replace('.vox', '')
@@ -433,10 +494,11 @@ def import_vox(path, voxel_size=1, mat_type='SepMat', gamma_correct=True, gamma_
     
     ### Import Options ###
     
-    if not gamma_correct:
+    gamma_value = options.gamma_value
+    if not options.gamma_correct:
         gamma_value = 1
     
-    if mat_type == 'SepMat': # Create material for every palette color.
+    if options.material_type == 'SepMat': # Create material for every palette color.
         for id, col in enumerate(palette):
             
             col = (pow(col[0], gamma_value), pow(col[1], gamma_value), pow(col[2], gamma_value), col[3])
@@ -444,7 +506,7 @@ def import_vox(path, voxel_size=1, mat_type='SepMat', gamma_correct=True, gamma_
             name = file_name + " #" + str(id+1)
             
             if name in bpy.data.materials:
-                if not override_materials: # Don't change materials.
+                if not options.override_materials: # Don't change materials.
                     continue
                 # Delete material and recreate it.
                 bpy.data.materials.remove(bpy.data.materials[name])
@@ -464,12 +526,12 @@ def import_vox(path, voxel_size=1, mat_type='SepMat', gamma_correct=True, gamma_
             bsdf.inputs["Emission Strength"].default_value = materials[id][3] * 20
             bsdf.inputs["Emission"].default_value = col
                 
-    elif mat_type == 'VertCol': # Create one material that uses vertex colors.
+    elif options.material_type == 'VertCol': # Create one material that uses vertex colors.
         name = file_name
         create_mat = True
         
         if name in bpy.data.materials: # Material already exists.
-            if override_materials:
+            if options.override_materials:
                 # Delete material and recreate it.
                 bpy.data.materials.remove(bpy.data.materials[name])
             else:
@@ -504,12 +566,12 @@ def import_vox(path, voxel_size=1, mat_type='SepMat', gamma_correct=True, gamma_
             links.new(vc_mat.outputs["Alpha"], multiply.inputs[0])
             links.new(multiply.outputs[0], bsdf.inputs["Emission Strength"])
     
-    elif mat_type == 'Tex':  # Generates textures to store color and material data.
+    elif options.material_type == 'Tex':  # Generates textures to store color and material data.
         name = file_name
         create_mat = True
         
         if name in bpy.data.materials: # Material already exists.
-            if override_materials:
+            if options.override_materials:
                 # Delete material + texture and recreate it.
                 bpy.data.materials.remove(bpy.data.materials[name])
                 bpy.data.images.remove(bpy.data.images[name + '_col'])
@@ -579,7 +641,7 @@ def import_vox(path, voxel_size=1, mat_type='SepMat', gamma_correct=True, gamma_
         if trans_child in groups:
             group_children = groups[trans_child]
             # In my testing, group nodes never have valid
-            # children ids. Is the documentation incorrect?
+            # children ids. Is the documentation correct?
         
         if trans_child in shapes:
             shape_children = shapes[trans_child]
@@ -587,9 +649,32 @@ def import_vox(path, voxel_size=1, mat_type='SepMat', gamma_correct=True, gamma_
             for model_id in shape_children:
                 models[model_id].position = trans[0]
     
+    ## Create Collections ##
+    collections = (None, None, None)
+    if options.organize:
+        main = bpy.data.collections.new(file_name)
+        bpy.context.scene.collection.children.link(main)
+        
+        mesh_col = bpy.data.collections.new("Meshes")
+        main.children.link(mesh_col)
+        
+        if options.create_lights:
+            light_col = bpy.data.collections.new("Lights")
+            main.children.link(light_col)
+        else:
+            light_col = None
+        
+        if options.create_volume:
+            volume_col = bpy.data.collections.new("Volumes")
+            main.children.link(volume_col)
+        else:
+            volume_col = None
+        
+        collections = (mesh_col, light_col, volume_col)
+    
     ### Generate Objects ###
     for model in models.values():
-        model.generate(file_name, voxel_size, mat_type, palette, materials, cleanup_mesh)
+        model.generate(file_name, options.voxel_size, options.material_type, palette, materials, options.cleanup_mesh, collections)
 
 ################################################################################################################################################
 
