@@ -328,6 +328,10 @@ class VoxelObject:
         
         # Cleanup Mesh
         if cleanup:
+            bpy.ops.object.select_all(action='DESELECT')
+            for obj in objects:
+                obj.select_set(True) # Select all objects that were generated.
+            bpy.ops.object.join()
             bpy.ops.object.editmode_toggle()
             bpy.ops.mesh.select_all(action='SELECT')
             bpy.ops.mesh.remove_doubles()
