@@ -377,8 +377,8 @@ def import_vox(path, options):
         materials = [[0.5, 0.0, 0.0, 0.0] for _ in range(255)] # [roughness, metallic, glass, emission] * 255
 
         # Makes sure it's supported vox file
-        assert (struct.unpack('<4ci', file.read(8)) == (b'V', b'O', b'X', b' ', 150))
-        
+        assert (struct.unpack('<4ci', file.read(8)) == (b'V', b'O', b'X', b' ', 0xc8))
+
         # MAIN chunk
         assert (struct.unpack('<4c', file.read(4)) == (b'M', b'A', b'I', b'N'))
         N, M = struct.unpack('<ii', file.read(8))
