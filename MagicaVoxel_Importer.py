@@ -522,7 +522,7 @@ def import_vox(path, options):
 
             bsdf.inputs["Roughness"].default_value = materials[id][0]
             bsdf.inputs["Metallic"].default_value = materials[id][1]
-            bsdf.inputs["Transmission"].default_value = materials[id][2]
+            bsdf.inputs["Transmission Weight"].default_value = materials[id][2]
             bsdf.inputs["Emission Strength"].default_value = materials[id][3] * 20
             bsdf.inputs["Emission"].default_value = col
                 
